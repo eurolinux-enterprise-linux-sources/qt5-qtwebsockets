@@ -1,31 +1,37 @@
 /****************************************************************************
 **
-** Copyright (C) 2014 Kurt Pattyn <pattyn.kurt@gmail.com>.
-** Contact: http://www.qt.io/licensing/
+** Copyright (C) 2016 Kurt Pattyn <pattyn.kurt@gmail.com>.
+** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebSockets module of the Qt Toolkit.
 **
-** $QT_BEGIN_LICENSE:LGPL21$
+** $QT_BEGIN_LICENSE:LGPL$
 ** Commercial License Usage
 ** Licensees holding valid commercial Qt licenses may use this file in
 ** accordance with the commercial license agreement provided with the
 ** Software or, alternatively, in accordance with the terms contained in
 ** a written agreement between you and The Qt Company. For licensing terms
-** and conditions see http://www.qt.io/terms-conditions. For further
-** information use the contact form at http://www.qt.io/contact-us.
+** and conditions see https://www.qt.io/terms-conditions. For further
+** information use the contact form at https://www.qt.io/contact-us.
 **
 ** GNU Lesser General Public License Usage
 ** Alternatively, this file may be used under the terms of the GNU Lesser
-** General Public License version 2.1 or version 3 as published by the Free
-** Software Foundation and appearing in the file LICENSE.LGPLv21 and
-** LICENSE.LGPLv3 included in the packaging of this file. Please review the
-** following information to ensure the GNU Lesser General Public License
-** requirements will be met: https://www.gnu.org/licenses/lgpl.html and
-** http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html.
+** General Public License version 3 as published by the Free Software
+** Foundation and appearing in the file LICENSE.LGPL3 included in the
+** packaging of this file. Please review the following information to
+** ensure the GNU Lesser General Public License version 3 requirements
+** will be met: https://www.gnu.org/licenses/lgpl-3.0.html.
 **
-** As a special exception, The Qt Company gives you certain additional
-** rights. These rights are described in The Qt Company LGPL Exception
-** version 1.1, included in the file LGPL_EXCEPTION.txt in this package.
+** GNU General Public License Usage
+** Alternatively, this file may be used under the terms of the GNU
+** General Public License version 2.0 or (at your option) the GNU General
+** Public license version 3 or any later version approved by the KDE Free
+** Qt Foundation. The licenses are as published by the Free Software
+** Foundation and appearing in the file LICENSE.GPL2 and LICENSE.GPL3
+** included in the packaging of this file. Please review the following
+** information to ensure the GNU General Public License requirements will
+** be met: https://www.gnu.org/licenses/gpl-2.0.html and
+** https://www.gnu.org/licenses/gpl-3.0.html.
 **
 ** $QT_END_LICENSE$
 **
@@ -98,6 +104,8 @@ void QWebSocketServerPrivate::init()
                              q_ptr, &QWebSocketServer::peerVerifyError);
             QObject::connect(pSslServer, &QSslServer::sslErrors,
                              q_ptr, &QWebSocketServer::sslErrors);
+            QObject::connect(pSslServer, &QSslServer::preSharedKeyAuthenticationRequired,
+                             q_ptr, &QWebSocketServer::preSharedKeyAuthenticationRequired);
         }
 #else
         qFatal("SSL not supported on this platform.");
@@ -376,26 +384,19 @@ void QWebSocketServerPrivate::setError(QWebSocketProtocol::CloseCode code, const
  */
 void QWebSocketServerPrivate::onNewConnection()
 {
-    while (m_pTcpServer->hasPendingConnections()) {
-        QTcpSocket *pTcpSocket = m_pTcpServer->nextPendingConnection();
-        //use a queued connection because a QSslSocket
-        //needs the event loop to process incoming data
-        //if not queued, data is incomplete when handshakeReceived is called
-        QObjectPrivate::connect(pTcpSocket, &QTcpSocket::readyRead,
-                                this, &QWebSocketServerPrivate::handshakeReceived,
-                                Qt::QueuedConnection);
-    }
+    while (m_pTcpServer->hasPendingConnections())
+        handleConnection(m_pTcpServer->nextPendingConnection());
 }
 
 /*!
     \internal
  */
-void QWebSocketServerPrivate::onCloseConnection()
+void QWebSocketServerPrivate::onSocketDisconnected()
 {
     if (Q_LIKELY(currentSender)) {
         QTcpSocket *pTcpSocket = qobject_cast<QTcpSocket*>(currentSender->sender);
         if (Q_LIKELY(pTcpSocket))
-            pTcpSocket->close();
+            pTcpSocket->deleteLater();
     }
 }
 
@@ -425,7 +426,7 @@ void QWebSocketServerPrivate::handshakeReceived()
                this, &QWebSocketServerPrivate::handshakeReceived);
     Q_Q(QWebSocketServer);
     bool success = false;
-    bool isSecure = false;
+    bool isSecure = (m_secureMode == SecureMode);
 
     if (m_pendingConnections.length() >= maxPendingConnections()) {
         pTcpSocket->close();
@@ -478,6 +479,19 @@ void QWebSocketServerPrivate::handshakeReceived()
     }
     if (!success) {
         pTcpSocket->close();
+    }
+}
+
+void QWebSocketServerPrivate::handleConnection(QTcpSocket *pTcpSocket) const
+{
+    if (Q_LIKELY(pTcpSocket)) {
+        // Use a queued connection because a QSslSocket needs the event loop to process incoming
+        // data. If not queued, data is incomplete when handshakeReceived is called.
+        QObjectPrivate::connect(pTcpSocket, &QTcpSocket::readyRead,
+                                this, &QWebSocketServerPrivate::handshakeReceived,
+                                Qt::QueuedConnection);
+        QObjectPrivate::connect(pTcpSocket, &QTcpSocket::disconnected,
+                                this, &QWebSocketServerPrivate::onSocketDisconnected);
     }
 }
 
